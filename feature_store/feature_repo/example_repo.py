@@ -41,50 +41,50 @@ driver_stats_source = FileSource(
 # Наши parquet файлы содержат примеры данных, включающие столбец driver_id,
 # временные метки и три столбца с признаками. Здесь мы определяем Feature View,
 # который позволит нам передавать эти данные в нашу модель онлайн
-driver_stats_fv = FeatureView(
-    # Уникальное имя этого представления признаков. Два представления признаков
-    # в одном проекте не могут иметь одинаковое имя
-    name="driver_hourly_stats",
+# ------------------------------
+# 1. Feature View: метрики качества водителя
+# ------------------------------
+driver_quality_fv = FeatureView(
+    name="driver_quality_stats",
     entities=[driver],
     ttl=timedelta(days=1),
-    # Список признаков, определенных ниже, действует как схема для материализации
-    # признаков в хранилище, а также используется как ссылки при извлечении
-    # для создания обучающего набора данных или предоставления признаков
     schema=[
-        Field(name="conv_rate", dtype=Float32),
-        Field(name="acc_rate", dtype=Float32),
-        Field(name="avg_daily_trips", dtype=Int64, description="Среднее количество поездок в день"),
+        Field(name="conv_rate", dtype=Float32, description="Коэффициент конверсии"),
+        Field(name="acc_rate", dtype=Float32, description="Коэффициент точности"),
     ],
     online=True,
     source=driver_stats_source,
-    # Теги - это определенные пользователем пары ключ/значение,
-    # которые прикрепляются к каждому представлению признаков
-    tags={"team": "driver_performance"},
+    tags={"group": "driver_quality"},
 )
 
-# Определяем источник данных запроса, который кодирует признаки/информацию,
-# доступную только во время запроса (например, часть пользовательского HTTP-запроса)
-input_request = RequestSource(
-    name="vals_to_add",
+# ------------------------------
+# 2. Feature View: активность водителя
+# ------------------------------
+driver_activity_fv = FeatureView(
+    name="driver_activity_stats",
+    entities=[driver],
+    ttl=timedelta(days=1),
     schema=[
-        Field(name="val_to_add", dtype=Int64),
-        Field(name="val_to_add_2", dtype=Int64),
+        Field(name="avg_daily_trips", dtype=Int64, description="Среднее число поездок в день"),
     ],
+    online=True,
+    source=driver_stats_source,
+    tags={"group": "driver_activity"},
 )
 
 # Определяем представление признаков по требованию, которое может генерировать
 # новые признаки на основе существующих представлений и признаков из RequestSource
 @on_demand_feature_view(
-    sources=[driver_stats_fv, input_request],
+    sources=[driver_quality_fv, driver_activity_fv],
     schema=[
-        Field(name="conv_rate_plus_val1", dtype=Float64),
-        Field(name="conv_rate_plus_val2", dtype=Float64),
+        Field(name="efficiency_index", dtype=Float64),
+        Field(name="risk_score", dtype=Float64),
     ],
 )
-def transformed_conv_rate(inputs: pd.DataFrame) -> pd.DataFrame:
+def driver_efficiency_metrics(inputs: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame()
-    df["conv_rate_plus_val1"] = inputs["conv_rate"] + inputs["val_to_add"]
-    df["conv_rate_plus_val2"] = inputs["conv_rate"] + inputs["val_to_add_2"]
+    df["efficiency_index"] = inputs["conv_rate"] + inputs["avg_daily_trips"]
+    df["risk_score"] = 1 - inputs["acc_rate"] * np.log(1+inputs["avg_daily_trips"])
     return df
 
 
@@ -92,15 +92,15 @@ def transformed_conv_rate(inputs: pd.DataFrame) -> pd.DataFrame:
 driver_activity_v1 = FeatureService(
     name="driver_activity_v1",
     features=[
-        driver_stats_fv[["conv_rate"]],  # Выбирает подмножество признаков из представления
-        transformed_conv_rate,  # Выбирает все признаки из представления
+        driver_quality_fv[["conv_rate"]],  # Выбирает подмножество признаков из представления
+        driver_efficiency_metrics,  # Выбирает все признаки из представления
     ],
     logging_config=LoggingConfig(
         destination=FileLoggingDestination(path=DATA_PATH)
     ),
 )
 driver_activity_v2 = FeatureService(
-    name="driver_activity_v2", features=[driver_stats_fv, transformed_conv_rate]
+    name="driver_activity_v2", features=[driver_quality_fv, driver_activity_fv, driver_efficiency_metrics]
 )
 
 # Определяет способ отправки данных (доступных офлайн, онлайн или обоих типов) в Feast
@@ -112,68 +112,48 @@ driver_stats_push_source = PushSource(
 # Определяет слегка измененную версию представления признаков, описанного выше,
 # где источник был изменен на push source. Это позволяет напрямую отправлять
 # свежие признаки в онлайн-хранилище для этого представления признаков
-driver_stats_fresh_fv = FeatureView(
-    name="driver_hourly_stats_fresh",
+driver_quality_fresh_fv = FeatureView(
+    name="driver_quality_stats_fresh",
     entities=[driver],
     ttl=timedelta(days=1),
     schema=[
-        Field(name="conv_rate", dtype=Float32),
-        Field(name="acc_rate", dtype=Float32),
-        Field(name="avg_daily_trips", dtype=Int64),
+        Field(name="conv_rate", dtype=Float32, description="Коэффициент конверсии"),
+        Field(name="acc_rate", dtype=Float32, description="Коэффициент точности"),
     ],
     online=True,
-    source=driver_stats_push_source,  # Изменено по сравнению с предыдущей версией
-    tags={"team": "driver_performance"},
+    source=driver_stats_push_source,
+    tags={"group": "driver_quality"},
 )
-
-
+# ------------------------------
+# 2. Feature View: активность водителя
+# ------------------------------
+driver_activity_fresh_fv = FeatureView(
+    name="driver_activity_stats_fresh",
+    entities=[driver],
+    ttl=timedelta(days=1),
+    schema=[
+        Field(name="avg_daily_trips", dtype=Int64, description="Среднее число поездок в день"),
+    ],
+    online=True,
+    source=driver_stats_push_source,
+    tags={"group": "driver_activity"},
+)
 # Определяем представление признаков по требованию, которое может генерировать
 # новые признаки на основе существующих представлений и признаков из RequestSource
 @on_demand_feature_view(
-    sources=[driver_stats_fresh_fv, input_request],  # использует свежую версию Feature View
+    sources=[driver_quality_fresh_fv, driver_activity_fresh_fv],
     schema=[
-        Field(name="conv_rate_plus_val1", dtype=Float64),
-        Field(name="conv_rate_plus_val2", dtype=Float64),
+        Field(name="efficiency_index", dtype=Float64),
+        Field(name="risk_score", dtype=Float64),
     ],
 )
-def transformed_conv_rate_fresh(inputs: pd.DataFrame) -> pd.DataFrame:
+def driver_efficiency_metrics_fresh(inputs: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame()
-    df["conv_rate_plus_val1"] = inputs["conv_rate"] + inputs["val_to_add"]
-    df["conv_rate_plus_val2"] = inputs["conv_rate"] + inputs["val_to_add_2"]
+    df["efficiency_index"] = inputs["conv_rate"] + inputs["avg_daily_trips"]
+    df["risk_score"] = 1 - inputs["acc_rate"] * np.log(1+inputs["avg_daily_trips"])
     return df
-
-
+# FeatureService группирует признаки в версию модели
 driver_activity_v3 = FeatureService(
-    name="driver_activity_v3",
-    features=[driver_stats_fresh_fv, transformed_conv_rate_fresh],
+    name="driver_activity_v3", features=[driver_quality_fresh_fv, driver_activity_fresh_fv, driver_efficiency_metrics_fresh]
 )
 
-# Добавлено!
-@on_demand_feature_view(
-    sources=[driver_stats_fv],  # Используем существующий Feature View
-    schema=[
-        Field(name="combined_rating", dtype=Float64),
-        Field(name="performance_score", dtype=Float64),
-    ],
-)
-def driver_performance_metrics(inputs: pd.DataFrame) -> pd.DataFrame:
-    df = pd.DataFrame()
-
-    # Рассчитываем комбинированный рейтинг как взвешенную сумму
-    # conv_rate имеет вес 0.6, acc_rate имеет вес 0.4
-    df["combined_rating"] = (inputs["conv_rate"] * 0.6 + inputs["acc_rate"] * 0.4)
-
-    # Рассчитываем показатель эффективности на основе среднего количества поездок
-    # и комбинированного рейтинга
-    df["performance_score"] = (df["combined_rating"] * np.log1p(inputs["avg_daily_trips"]))
-
-    return df
-
-# Обновляем существующий FeatureService, добавляя новые метрики
-driver_activity_v4 = FeatureService(
-    name="driver_activity_v4",
-    features=[
-        driver_stats_fv,
-        driver_performance_metrics  # Добавляем новые метрики в сервис
-    ]
-)
