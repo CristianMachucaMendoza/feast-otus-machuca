@@ -83,7 +83,7 @@ driver_activity_fv = FeatureView(
 )
 def driver_efficiency_metrics(inputs: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame()
-    df["efficiency_index"] = inputs["conv_rate"] + inputs["avg_daily_trips"]
+    df["efficiency_index"] = inputs["conv_rate"] * inputs["avg_daily_trips"]
     df["risk_score"] = 1 - inputs["acc_rate"] * np.log(1+inputs["avg_daily_trips"])
     return df
 
@@ -109,7 +109,7 @@ driver_stats_push_source = PushSource(
     batch_source=driver_stats_source,
 )
 
-# Определяет слегка измененную версию представления признаков, описанного выше,
+# Определяет новую версию представления признаков, описанного выше,
 # где источник был изменен на push source. Это позволяет напрямую отправлять
 # свежие признаки в онлайн-хранилище для этого представления признаков
 driver_quality_fresh_fv = FeatureView(
@@ -149,7 +149,7 @@ driver_activity_fresh_fv = FeatureView(
 )
 def driver_efficiency_metrics_fresh(inputs: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame()
-    df["efficiency_index"] = inputs["conv_rate"] + inputs["avg_daily_trips"]
+    df["efficiency_index"] = inputs["conv_rate"] * inputs["avg_daily_trips"]
     df["risk_score"] = 1 - inputs["acc_rate"] * np.log(1+inputs["avg_daily_trips"])
     return df
 # FeatureService группирует признаки в версию модели
